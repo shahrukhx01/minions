@@ -1,3 +1,3 @@
 dataset_prefix: bookscorpus
-dataset_name_or_path: ${oc.env:DATASET_ARROW_FILE_PATH}
+dataset_name_or_path: ${oc.env:DATASET_ARROW_FILE_PATH}  # download from https://www.kaggle.com/datasets/muennighoff/bookcorpus
 destination_path: dataset/bert_pretraining_data
