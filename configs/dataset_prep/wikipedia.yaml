@@ -4,4 +4,4 @@ destination_path: dataset/bert_pretraining_data
 hf_dataset_filters:
   language: "en"
   date: "20220301"
-  streaming: true
+  streaming: false

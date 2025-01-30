@@ -108,7 +108,7 @@ class BertPretrainingDataset:
     def __init__(self, bert_pretrating_dataset_config: BertPretrainingDatasetConfig):
         self._config = bert_pretrating_dataset_config
         # Initialize Ray
-        ray.init(num_cpus=os.cpu_count()//2)  # type: ignore
+        ray.init(num_cpus=os.cpu_count())  # type: ignore
 
     def prepare(self) -> Dataset:
         """Prepare the dataset for BERT pretraining by combining various
@@ -127,6 +127,7 @@ class BertPretrainingDataset:
             )
             return load_dataset(
                 self._config.dataset_name_or_path,
+                num_proc=os.cpu_count(),
                 **serialized_hf_dataset_filters,
             )
         else:
@@ -162,7 +163,7 @@ class BertPretrainingDataset:
         dataset = self.prepare()
 
         # create a pool of actors
-        num_cpus: int = os.cpu_count()//2 or 1  # type: ignore
+        num_cpus: int = os.cpu_count() or 1  # type: ignore
         lang_detect_actor_pool = [LanguageDetector.remote() for _ in range(num_cpus)]  # type: ignore
         text_chunker_actor_pool = [TextChunker.remote() for _ in range(num_cpus)]  # type: ignore
 
@@ -172,10 +173,6 @@ class BertPretrainingDataset:
         batch_idx = 0
         total_rows_processed = 0
         for idx, row in enumerate(dataset):
-            if self._config.is_batch_on_disk(batch_idx):
-                logger.info(f"Batch {self._config.dataset_prefix}_{batch_idx} already on disk")
-                batch_idx += 1
-                continue
             lang_detect_actor = lang_detect_actor_pool[idx % num_cpus]
             lang_detect_futures.append(lang_detect_actor.detect_language.remote(row))
             if len(lang_detect_futures) >= RAY_FUTURES_BATCH_SIZE:
