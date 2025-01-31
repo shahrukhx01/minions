@@ -172,6 +172,7 @@ cython_debug/
 
 # datasets
 dataset/
+*.jsonl
 
 # OSX
 .DS_Store
