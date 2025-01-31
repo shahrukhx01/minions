@@ -108,7 +108,11 @@ class BertPretrainingDataset:
     def __init__(self, bert_pretrating_dataset_config: BertPretrainingDatasetConfig):
         self._config = bert_pretrating_dataset_config
         # Initialize Ray
-        ray.init(num_cpus=os.cpu_count())  # type: ignore
+        try:
+            ray.shutdown()
+            ray.init(num_cpus=os.cpu_count())  # type: ignore
+        except Exception as e:
+            logger.error(f"Error initializing Ray: {e}")
 
     def prepare(self) -> Dataset:
         """Prepare the dataset for BERT pretraining by combining various
