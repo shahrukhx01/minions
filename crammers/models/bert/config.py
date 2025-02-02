@@ -17,12 +17,15 @@ def load_bert_config(model_name: str) -> BertConfig:
     hf_bert_config: HF_BertConfig = HF_BertConfig.from_pretrained(model_name)
     return BertConfig(
         vocab_size=hf_bert_tokenizer.vocab_size,
+        type_vocab_size=hf_bert_config.type_vocab_size,
+        pad_token_id=hf_bert_config.pad_token_id,
         embed_size=hf_bert_config.hidden_size,  # Standard for bert-base
         seq_len=hf_bert_config.max_position_embeddings,
         heads=hf_bert_config.num_attention_heads,
         d_model=hf_bert_config.hidden_size,
         feed_forward_hidden=hf_bert_config.intermediate_size,
         n_layers=hf_bert_config.num_hidden_layers,
+        dropout=hf_bert_config.hidden_dropout_prob,
     )
 
 

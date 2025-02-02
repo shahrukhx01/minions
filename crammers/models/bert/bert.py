@@ -19,6 +19,7 @@ class BertConfig:
 
     Args:
         vocab_size (int): Size of the vocabulary.
+        type_vocab_size (int): Number of segment types.
         embed_size (int): Dimension of the embeddings.
         seq_len (int): Maximum sequence length for the input.
         heads (int): Number of attention heads.
@@ -27,6 +28,7 @@ class BertConfig:
         dropout (float): Dropout rate to prevent overfitting.
         pad_token_id (int): Token ID for padding.
         n_layers (int): Number of layers in the encoder.
+        layer_norm_eps (float): Epsilon value for layer normalization.
         learning_rate (float): Learning rate for the optimizer.
         weight_decay (float): Weight decay for the optimizer.
         warmup_steps (int): Number of steps for the learning rate warmup.
@@ -35,6 +37,7 @@ class BertConfig:
     def __init__(
         self,
         vocab_size=30522,
+        type_vocab_size=3,
         embed_size=768,
         seq_len=512,
         heads=12,
@@ -43,11 +46,13 @@ class BertConfig:
         dropout=0.1,
         pad_token_id=0,
         n_layers=12,
+        layer_norm_eps=1e-12,
         learning_rate=5e-5,
         weight_decay=0.01,
         warmup_steps=4000,
     ):
         self.vocab_size = vocab_size
+        self.type_vocab_size = type_vocab_size
         self.embed_size = embed_size
         self.seq_len = seq_len
         self.heads = heads
@@ -56,6 +61,7 @@ class BertConfig:
         self.dropout = dropout
         self.pad_token_id = pad_token_id
         self.n_layers = n_layers
+        self.layer_norm_eps = layer_norm_eps
 
         # Optimizer parameters
         self.learning_rate = learning_rate
@@ -77,11 +83,12 @@ class BERTEmbedding(torch.nn.Module):
             config.vocab_size, config.embed_size, padding_idx=config.pad_token_id
         )
         self.segment = nn.Embedding(
-            3, config.embed_size, padding_idx=config.pad_token_id
+            config.type_vocab_size, config.embed_size
         )
         self.position = nn.Embedding(
-            config.seq_len, config.embed_size, padding_idx=config.pad_token_id
+            config.seq_len, config.embed_size
         )
+        self.layer_norm = nn.LayerNorm(config.embed_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(p=config.dropout)
 
     def forward(self, sequence: torch.Tensor, segment_label):
@@ -99,12 +106,14 @@ class BERTEmbedding(torch.nn.Module):
             .unsqueeze(0)
             .expand(sequence.shape[0], -1)
         )
-        batch = (
+        embeddings = (
             self.token(sequence)
             + self.position(position_ids)
             + self.segment(segment_label)
         )
-        return self.dropout(batch)
+        embeddings = self.layer_norm(embeddings)
+        embeddings = self.dropout(embeddings)
+        return embeddings
 
 
 class MultiHeadedAttention(nn.Module):
