@@ -1,4 +1,8 @@
 from dataclasses import dataclass
+
+from transformers import BertModel, BertTokenizer, BertConfig as HF_BertConfig
+
+from loguru import logger
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -27,6 +31,7 @@ class BertConfig:
         weight_decay (float): Weight decay for the optimizer.
         warmup_steps (int): Number of steps for the learning rate warmup.
     """
+
     def __init__(
         self,
         vocab_size=30522,
@@ -64,15 +69,22 @@ class BERTEmbedding(torch.nn.Module):
     Args:
         config (BertConfig): BERT configuration object that contains model parameters.
     """
+
     def __init__(self, config: BertConfig):
         super().__init__()
         self.embed_size = config.embed_size
-        self.token = nn.Embedding(config.vocab_size, config.embed_size, padding_idx=config.pad_token_id)
-        self.segment = nn.Embedding(3, config.embed_size, padding_idx=config.pad_token_id)
-        self.position = nn.Embedding(config.seq_len, config.embed_size, padding_idx=config.pad_token_id)
+        self.token = nn.Embedding(
+            config.vocab_size, config.embed_size, padding_idx=config.pad_token_id
+        )
+        self.segment = nn.Embedding(
+            3, config.embed_size, padding_idx=config.pad_token_id
+        )
+        self.position = nn.Embedding(
+            config.seq_len, config.embed_size, padding_idx=config.pad_token_id
+        )
         self.dropout = nn.Dropout(p=config.dropout)
 
-    def forward(self, sequence, segment_label):
+    def forward(self, sequence: torch.Tensor, segment_label):
         """Generates embeddings by adding token, positional, and segment embeddings.
 
         Args:
@@ -82,8 +94,15 @@ class BERTEmbedding(torch.nn.Module):
         Returns:
             torch.Tensor: Output embeddings after adding token, position, and segment embeddings.
         """
+        position_ids = (
+            torch.arange(sequence.shape[1], dtype=torch.long)
+            .unsqueeze(0)
+            .expand(sequence.shape[0], -1)
+        )
         batch = (
-            self.token(sequence) + self.position(sequence) + self.segment(segment_label)
+            self.token(sequence)
+            + self.position(position_ids)
+            + self.segment(segment_label)
         )
         return self.dropout(batch)
 
@@ -94,6 +113,7 @@ class MultiHeadedAttention(nn.Module):
     Args:
         config (BertConfig): BERT configuration object that contains model parameters.
     """
+
     def __init__(self, config: BertConfig):
         super(MultiHeadedAttention, self).__init__()
         assert config.d_model % config.heads == 0
@@ -132,7 +152,9 @@ class MultiHeadedAttention(nn.Module):
         key = key.view(key.shape[0], -1, self.heads, self.d_k).permute(0, 2, 1, 3)
         value = value.view(value.shape[0], -1, self.heads, self.d_k).permute(0, 2, 1, 3)
 
-        scores = torch.matmul(query, key.permute(0, 1, 3, 2)) / math.sqrt(query.size(-1))
+        scores = torch.matmul(query, key.permute(0, 1, 3, 2)) / math.sqrt(
+            query.size(-1)
+        )
         scores = scores.masked_fill(mask == 0, -1e9)
 
         weights = F.softmax(scores, dim=-1)
@@ -155,6 +177,7 @@ class FFN(nn.Module):
     Args:
         config (BertConfig): BERT configuration object that contains model parameters.
     """
+
     def __init__(self, config: BertConfig):
         super(FFN, self).__init__()
         self.intermediate_dim = config.feed_forward_hidden
@@ -183,6 +206,7 @@ class BertEncoderLayer(torch.nn.Module):
     Args:
         config (BertConfig): BERT configuration object that contains model parameters.
     """
+
     def __init__(self, config: BertConfig):
         super(BertEncoderLayer, self).__init__()
         self.layernorm = torch.nn.LayerNorm(config.d_model)
@@ -200,7 +224,9 @@ class BertEncoderLayer(torch.nn.Module):
         Returns:
             torch.Tensor: Output embeddings after applying multi-head attention and feed-forward network.
         """
-        interacted = self.dropout(self.self_multihead(embeddings, embeddings, embeddings, mask))
+        interacted = self.dropout(
+            self.self_multihead(embeddings, embeddings, embeddings, mask)
+        )
         interacted = self.layernorm(interacted + embeddings)
         feed_forward_out = self.dropout(self.feed_forward(interacted))
         return self.layernorm(feed_forward_out + interacted)
@@ -212,6 +238,7 @@ class Bert(nn.Module):
     Args:
         config (BertConfig): BERT configuration object that contains model parameters.
     """
+
     def __init__(self, config: BertConfig):
         super().__init__()
         self.d_model = config.d_model
@@ -219,7 +246,9 @@ class Bert(nn.Module):
         self.heads = config.heads
         self.feed_forward_hidden = config.d_model * 4
         self.embedding = BERTEmbedding(config)
-        self.encoder_blocks = torch.nn.ModuleList([BertEncoderLayer(config) for _ in range(config.n_layers)])
+        self.encoder_blocks = torch.nn.ModuleList(
+            [BertEncoderLayer(config) for _ in range(config.n_layers)]
+        )
 
     def forward(self, batch, segment_labels):
         """Forward pass for the entire BERT model.
@@ -245,10 +274,15 @@ class NextSentencePrediction(torch.nn.Module):
     Args:
         hidden (int): BERT model output size.
     """
+
     def __init__(self, hidden):
         super().__init__()
-        self.linear = torch.nn.Linear(hidden, 1)  # Single output for binary classification
-        self.sigmoid = torch.nn.Sigmoid()  # Sigmoid activation for binary classification
+        self.linear = torch.nn.Linear(
+            hidden, 1
+        )  # Single output for binary classification
+        self.sigmoid = (
+            torch.nn.Sigmoid()
+        )  # Sigmoid activation for binary classification
 
     def forward(self, batch):
         """Forward pass to predict whether the next sentence is the correct one.
@@ -270,6 +304,7 @@ class MaskedLanguageModel(torch.nn.Module):
         hidden (int): BERT model output size.
         vocab_size (int): Size of the vocabulary.
     """
+
     def __init__(self, hidden, vocab_size):
         super().__init__()
         self.linear = torch.nn.Linear(hidden, vocab_size)
@@ -287,12 +322,13 @@ class MaskedLanguageModel(torch.nn.Module):
         return self.softmax(self.linear(batch))
 
 
-class BERTLM(L.LightningModule):
+class BertLM(L.LightningModule):
     """BERT Language Model for pretraining: Next Sentence Prediction + Masked Language Model
 
     Args:
         config (BertConfig): Configuration object that contains model parameters.
     """
+
     def __init__(self, config: BertConfig):
         super().__init__()
         self.config = config
@@ -325,3 +361,200 @@ class BERTLM(L.LightningModule):
             weight_decay=self.config.weight_decay,
         )
         return ScheduledOptim(optimizer, self.config.d_model, self.config.warmup_steps)
+
+    def load_pretrained_bert(self, model_name: str = "bert-base-uncased"):
+        # sourcery skip: extract-method
+        """
+        Load pretrained weights from HuggingFace Transformers BERT model into custom BERT implementation.
+
+        Args:
+            model_name (str): Name of pretrained model to load from HuggingFace
+
+        Returns:
+            BERTLM: Custom model with loaded pretrained weights
+            None: If transformers is not installed
+        """
+        try:
+            # Load pretrained model
+            pretrained = BertModel.from_pretrained(model_name)
+
+            # Map embeddings
+            self.bert.embedding.token.weight.data = (
+                pretrained.embeddings.word_embeddings.weight.data
+            )
+            self.bert.embedding.position.weight.data = (
+                pretrained.embeddings.position_embeddings.weight.data
+            )
+            self.bert.embedding.segment.weight.data = (
+                pretrained.embeddings.token_type_embeddings.weight.data
+            )
+
+            # Map encoder layers
+            for custom_layer, pretrained_layer in zip(
+                self.bert.encoder_blocks, pretrained.encoder.layer
+            ):
+                # Self attention weights
+                custom_layer.self_multihead.query.weight.data = (
+                    pretrained_layer.attention.self.query.weight.data
+                )
+                custom_layer.self_multihead.query.bias.data = (
+                    pretrained_layer.attention.self.query.bias.data
+                )
+                custom_layer.self_multihead.key.weight.data = (
+                    pretrained_layer.attention.self.key.weight.data
+                )
+                custom_layer.self_multihead.key.bias.data = (
+                    pretrained_layer.attention.self.key.bias.data
+                )
+                custom_layer.self_multihead.value.weight.data = (
+                    pretrained_layer.attention.self.value.weight.data
+                )
+                custom_layer.self_multihead.value.bias.data = (
+                    pretrained_layer.attention.self.value.bias.data
+                )
+                custom_layer.self_multihead.output_linear.weight.data = (
+                    pretrained_layer.attention.output.dense.weight.data
+                )
+                custom_layer.self_multihead.output_linear.bias.data = (
+                    pretrained_layer.attention.output.dense.bias.data
+                )
+
+                # Layer norm weights
+                custom_layer.layernorm.weight.data = (
+                    pretrained_layer.attention.output.LayerNorm.weight.data
+                )
+                custom_layer.layernorm.bias.data = (
+                    pretrained_layer.attention.output.LayerNorm.bias.data
+                )
+
+                # Feed forward weights
+                custom_layer.feed_forward.fc1.weight.data = (
+                    pretrained_layer.intermediate.dense.weight.data
+                )
+                custom_layer.feed_forward.fc1.bias.data = (
+                    pretrained_layer.intermediate.dense.bias.data
+                )
+                custom_layer.feed_forward.fc2.weight.data = (
+                    pretrained_layer.output.dense.weight.data
+                )
+                custom_layer.feed_forward.fc2.bias.data = (
+                    pretrained_layer.output.dense.bias.data
+                )
+
+            logger.info(
+                f"Successfully loaded weights from pretrained model: {model_name}"
+            )
+            return self
+
+        except Exception as e:
+            logger.error(f"Error loading pretrained model: {str(e)}")
+            return None
+
+
+def create_pretrained_model(model_name: str = "bert-base-uncased"):
+    # sourcery skip: assign-if-exp, extract-method, reintroduce-else
+    """
+    Create a custom BERT model with pretrained weights.
+
+    Args:
+        model_name (str): Name of pretrained model to load
+
+    Returns:
+        tuple: (BERTLM, tokenizer) or (None, None) if transformers is not installed
+    """
+    try:
+        # Load pretrained tokenizer to get vocab size
+        tokenizer = BertTokenizer.from_pretrained(model_name)
+        hf_bert_config: HF_BertConfig = HF_BertConfig.from_pretrained(model_name)
+
+        # Create config with matching parameters
+        config = BertConfig(
+            vocab_size=tokenizer.vocab_size,
+            embed_size=hf_bert_config.hidden_size,  # Standard for bert-base
+            seq_len=hf_bert_config.max_position_embeddings,
+            heads=hf_bert_config.num_attention_heads,
+            d_model=hf_bert_config.hidden_size,
+            feed_forward_hidden=hf_bert_config.intermediate_size,
+            n_layers=hf_bert_config.num_hidden_layers,
+        )
+
+        # Create and load model
+        model = BertLM(config)
+        model = model.load_pretrained_bert(model_name)
+        logger.info(f"Created pretrained model: {model_name}")
+
+        if model is None:
+            return None, None
+
+        return model, tokenizer
+
+    except Exception as e:
+        logger.error(f"Error creating pretrained model: {str(e)}")
+        return None, None
+
+
+# Load Hugging Face tokenizer
+tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
+
+# Function to get embeddings from custom BERT
+def get_custom_bert_embeddings(custom_model, tokenizer, text):
+    tokens = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    input_ids = tokens["input_ids"]
+    segment_labels = torch.zeros_like(
+        input_ids
+    )  # Assume all tokens belong to the same segment
+
+    with torch.no_grad():
+        custom_embeddings = custom_model.bert(
+            input_ids, segment_labels
+        )  # Assuming `custom_model.bert` outputs embeddings
+
+    return custom_embeddings
+
+
+# Function to get embeddings from Hugging Face's BERT
+def get_huggingface_bert_embeddings(hf_model, tokenizer, text):
+    tokens = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+
+    with torch.no_grad():
+        outputs = hf_model(**tokens)
+        hf_embeddings = (
+            outputs.last_hidden_state
+        )  # Shape: (batch_size, seq_len, hidden_dim)
+
+    return hf_embeddings
+
+
+# Function to compare embeddings
+def compare_embeddings(custom_embeddings, hf_embeddings, tol=1e-5):
+    print("Exact Equality:", torch.equal(custom_embeddings, hf_embeddings))
+    print(
+        "Approximate Equality:",
+        torch.allclose(custom_embeddings, hf_embeddings, atol=tol),
+    )
+
+    # Cosine similarity per token
+    cosine_sim = torch.nn.functional.cosine_similarity(
+        custom_embeddings, hf_embeddings, dim=-1
+    )
+    print("Average Cosine Similarity:", cosine_sim.mean().item())
+
+    # Euclidean Distance
+    euclidean_dist = torch.norm(custom_embeddings - hf_embeddings, dim=-1).mean().item()
+    print("Average Euclidean Distance:", euclidean_dist)
+
+
+# Example usage
+if __name__ == "__main__":
+    text = "This is a sample input sentence."
+
+    # Load Hugging Face BERT model
+    hf_model = BertModel.from_pretrained("bert-base-uncased")
+    model, tokenizer = create_pretrained_model("bert-base-uncased")
+    # Assume `model` is your custom BERT model
+    custom_embeddings = get_custom_bert_embeddings(model, tokenizer, text)
+    hf_embeddings = get_huggingface_bert_embeddings(hf_model, tokenizer, text)
+
+    # Compare embeddings
+    compare_embeddings(custom_embeddings, hf_embeddings)
