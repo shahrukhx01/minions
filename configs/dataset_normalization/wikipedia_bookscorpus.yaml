@@ -1,0 +1,6 @@
+dataset_prefix: wikipedia_bookcorpus
+dataset_name_or_path: shahrukhx01/wikipedia-bookscorpus-en-preprocessed
+destination_path: dataset/bert_pretraining_data
+is_on_disk: false
+hf_dataset_filters:
+  streaming: false
