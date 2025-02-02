@@ -13,7 +13,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Create virtual environment and install the dependencies
 uv venv
 source .venv/bin/activate
-uv pip install -r requirements.txt
+uv pip install .
 ```
 
 ## Models
