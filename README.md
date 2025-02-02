@@ -20,7 +20,7 @@ uv pip install .
 
 | Model | Dataset Preparation | Training |
 |-------|-------------------|-----------|
-| BERT  | [Data Preprocessing Pipeline](minions/scripts/data/bert_pretraining_data/README.md) | Coming soon |
+| BERT  | [Data Preprocessing Pipeline](scripts/data/bert_pretraining_data/README.md) | Coming soon |
 
 ## License
 
