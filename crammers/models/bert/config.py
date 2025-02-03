@@ -25,7 +25,10 @@ def load_bert_config(model_name: str) -> BertConfig:
         d_model=hf_bert_config.hidden_size,
         feed_forward_hidden=hf_bert_config.intermediate_size,
         n_layers=hf_bert_config.num_hidden_layers,
-        dropout=hf_bert_config.hidden_dropout_prob,
+        hidden_dropout_prob=hf_bert_config.hidden_dropout_prob,
+        attention_probs_dropout_prob=hf_bert_config.attention_probs_dropout_prob,
+        classifier_dropout=hf_bert_config.classifier_dropout,
+        layer_norm_eps=hf_bert_config.layer_norm_eps,
     )
 
 

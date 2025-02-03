@@ -25,7 +25,9 @@ class BertConfig:
         heads (int): Number of attention heads.
         d_model (int): Dimension of the model.
         feed_forward_hidden (int): Hidden layer size of the feedforward network.
-        dropout (float): Dropout rate to prevent overfitting.
+        hidden_dropout_prob (float): Dropout probability for hidden layers.
+        attention_probs_dropout_prob (float): Dropout probability for attention layers.
+        classifier_dropout (float): Dropout probability for the classifier layer.
         pad_token_id (int): Token ID for padding.
         n_layers (int): Number of layers in the encoder.
         layer_norm_eps (float): Epsilon value for layer normalization.
@@ -43,7 +45,9 @@ class BertConfig:
         heads=12,
         d_model=768,
         feed_forward_hidden=3072,
-        dropout=0.1,
+        hidden_dropout_prob=0.1,
+        attention_probs_dropout_prob=0.1,
+        classifier_dropout=None,
         pad_token_id=0,
         n_layers=12,
         layer_norm_eps=1e-12,
@@ -58,7 +62,9 @@ class BertConfig:
         self.heads = heads
         self.d_model = d_model
         self.feed_forward_hidden = feed_forward_hidden
-        self.dropout = dropout
+        self.hidden_dropout_prob = hidden_dropout_prob
+        self.attention_probs_dropout_prob = attention_probs_dropout_prob
+        self.classifier_dropout = classifier_dropout
         self.pad_token_id = pad_token_id
         self.n_layers = n_layers
         self.layer_norm_eps = layer_norm_eps
@@ -69,7 +75,7 @@ class BertConfig:
         self.warmup_steps = warmup_steps
 
 
-class BERTEmbedding(torch.nn.Module):
+class BertEmbedding(torch.nn.Module):
     """BERT embedding layer that generates token, positional, and segment embeddings.
 
     Args:
@@ -89,30 +95,28 @@ class BERTEmbedding(torch.nn.Module):
             config.seq_len, config.embed_size
         )
         self.layer_norm = nn.LayerNorm(config.embed_size, eps=config.layer_norm_eps)
-        self.dropout = nn.Dropout(p=config.dropout)
+        self.dropout = nn.Dropout(p=config.hidden_dropout_prob)
+        self.register_buffer(
+            "position_ids", torch.arange(config.seq_len).expand((1, -1)), persistent=False
+        )
 
-    def forward(self, sequence: torch.Tensor, segment_label):
+    def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor) -> torch.Tensor:
         """Generates embeddings by adding token, positional, and segment embeddings.
 
         Args:
-            sequence (torch.Tensor): Tensor of input token indices.
-            segment_label (torch.Tensor): Tensor of segment indices.
+            input_ids (torch.Tensor): Tensor of input token indices.
+            token_type_ids (torch.Tensor): Tensor of segment indices.
 
         Returns:
             torch.Tensor: Output embeddings after adding token, position, and segment embeddings.
         """
-        position_ids = (
-            torch.arange(sequence.shape[1], dtype=torch.long)
-            .unsqueeze(0)
-            .expand(sequence.shape[0], -1)
-        )
         embeddings = (
-            self.token(sequence)
-            + self.position(position_ids)
-            + self.segment(segment_label)
+            self.token(input_ids)
+            + self.position(self.position_ids[:, : input_ids.size(1)])
+            + self.segment(token_type_ids)
         )
-        embeddings = self.layer_norm(embeddings)
-        embeddings = self.dropout(embeddings)
+        # embeddings = self.layer_norm(embeddings)
+        # embeddings = self.dropout(embeddings)
         return embeddings
 
 
@@ -128,7 +132,7 @@ class MultiHeadedAttention(nn.Module):
         assert config.d_model % config.heads == 0
         self.d_k = config.d_model // config.heads
         self.heads = config.heads
-        self.dropout = torch.nn.Dropout(config.dropout)
+        self.dropout = torch.nn.Dropout(config.attention_probs_dropout_prob)
 
         self.query = torch.nn.Linear(config.d_model, config.d_model)
         self.key = torch.nn.Linear(config.d_model, config.d_model)
@@ -190,7 +194,7 @@ class FFN(nn.Module):
     def __init__(self, config: BertConfig):
         super(FFN, self).__init__()
         self.intermediate_dim = config.feed_forward_hidden
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         self.fc1 = nn.Linear(config.d_model, self.intermediate_dim)
         self.fc2 = nn.Linear(self.intermediate_dim, config.d_model)
@@ -221,7 +225,7 @@ class BertEncoderLayer(torch.nn.Module):
         self.layernorm = torch.nn.LayerNorm(config.d_model)
         self.self_multihead = MultiHeadedAttention(config)
         self.feed_forward = FFN(config)
-        self.dropout = torch.nn.Dropout(config.dropout)
+        self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, embeddings: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Forward pass for a single encoder layer.
@@ -254,27 +258,27 @@ class Bert(nn.Module):
         self.n_layers = config.n_layers
         self.heads = config.heads
         self.feed_forward_hidden = config.d_model * 4
-        self.embedding = BERTEmbedding(config)
+        self.embeddings = BertEmbedding(config)
         self.encoder_blocks = torch.nn.ModuleList(
             [BertEncoderLayer(config) for _ in range(config.n_layers)]
         )
 
-    def forward(self, batch, segment_labels):
+    def forward(self, input_ids, token_type_ids):
         """Forward pass for the entire BERT model.
 
         Args:
-            batch (torch.Tensor): Input token indices.
-            segment_labels (torch.Tensor): Segment labels (e.g., sentence A/B).
+            input_ids (torch.Tensor): Input token indices.
+            token_type_ids (torch.Tensor): Segment labels (e.g., sentence A/B).
 
         Returns:
             torch.Tensor: Output embeddings after passing through all encoder layers.
         """
-        mask = (batch > 0).unsqueeze(1).repeat(1, batch.size(1), 1).unsqueeze(1)
-        batch = self.embedding(batch, segment_labels)
+        mask = (input_ids > 0).unsqueeze(1).repeat(1, input_ids.size(1), 1).unsqueeze(1)
+        embeddings = self.embeddings(input_ids, token_type_ids)
 
         for encoder in self.encoder_blocks:
-            batch = encoder.forward(batch, mask)
-        return batch
+            embeddings = encoder.forward(embeddings, mask)
+        return embeddings
 
 
 class NextSentencePrediction(torch.nn.Module):
@@ -388,16 +392,21 @@ class BertLM(L.LightningModule):
             pretrained = BertModel.from_pretrained(model_name)
 
             # Map embeddings
-            self.bert.embedding.token.weight.data = (
+            self.bert.embeddings.token.weight.data = (
                 pretrained.embeddings.word_embeddings.weight.data
             )
-            self.bert.embedding.position.weight.data = (
+            self.bert.embeddings.position.weight.data = (
                 pretrained.embeddings.position_embeddings.weight.data
             )
-            self.bert.embedding.segment.weight.data = (
+            self.bert.embeddings.segment.weight.data = (
                 pretrained.embeddings.token_type_embeddings.weight.data
             )
-
+            self.bert.embeddings.layer_norm.weight.data = (
+                pretrained.embeddings.LayerNorm.weight.data
+            )
+            self.bert.embeddings.layer_norm.bias.data = (
+                    pretrained.embeddings.LayerNorm.bias.data
+                )
             # Map encoder layers
             for custom_layer, pretrained_layer in zip(
                 self.bert.encoder_blocks, pretrained.encoder.layer
