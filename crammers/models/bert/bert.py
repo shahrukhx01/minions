@@ -88,19 +88,19 @@ class BertEmbedding(torch.nn.Module):
         self.token = nn.Embedding(
             config.vocab_size, config.embed_size, padding_idx=config.pad_token_id
         )
-        self.segment = nn.Embedding(
-            config.type_vocab_size, config.embed_size
-        )
-        self.position = nn.Embedding(
-            config.seq_len, config.embed_size
-        )
+        self.segment = nn.Embedding(config.type_vocab_size, config.embed_size)
+        self.position = nn.Embedding(config.seq_len, config.embed_size)
         self.layer_norm = nn.LayerNorm(config.embed_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(p=config.hidden_dropout_prob)
         self.register_buffer(
-            "position_ids", torch.arange(config.seq_len).expand((1, -1)), persistent=False
+            "position_ids",
+            torch.arange(config.seq_len).expand((1, -1)),
+            persistent=False,
         )
 
-    def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, input_ids: torch.Tensor, token_type_ids: torch.Tensor
+    ) -> torch.Tensor:
         """Generates embeddings by adding token, positional, and segment embeddings.
 
         Args:
@@ -115,8 +115,8 @@ class BertEmbedding(torch.nn.Module):
             + self.position(self.position_ids[:, : input_ids.size(1)])
             + self.segment(token_type_ids)
         )
-        # embeddings = self.layer_norm(embeddings)
-        # embeddings = self.dropout(embeddings)
+        embeddings = self.layer_norm(embeddings)
+        embeddings = self.dropout(embeddings)
         return embeddings
 
 
@@ -137,14 +137,17 @@ class MultiHeadedAttention(nn.Module):
         self.query = torch.nn.Linear(config.d_model, config.d_model)
         self.key = torch.nn.Linear(config.d_model, config.d_model)
         self.value = torch.nn.Linear(config.d_model, config.d_model)
-        self.output_linear = torch.nn.Linear(config.d_model, config.d_model)
+
+        self.dense = torch.nn.Linear(config.d_model, config.d_model)
+        self.layer_norm = torch.nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
+        self.out_dropout = torch.nn.Dropout(config.hidden_dropout_prob)
 
     def forward(
         self,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        mask: torch.Tensor,
+        mask: torch.Tensor = None,
     ):
         """Forward pass for multi-headed attention layer.
 
@@ -152,7 +155,7 @@ class MultiHeadedAttention(nn.Module):
             query (torch.Tensor): Query tensor.
             key (torch.Tensor): Key tensor.
             value (torch.Tensor): Value tensor.
-            mask (torch.Tensor): Mask tensor for attention.
+            mask (torch.Tensor): Mask tensor for attention. Defaults to None.
 
         Returns:
             torch.Tensor: Output tensor after applying attention.
@@ -168,7 +171,8 @@ class MultiHeadedAttention(nn.Module):
         scores = torch.matmul(query, key.permute(0, 1, 3, 2)) / math.sqrt(
             query.size(-1)
         )
-        scores = scores.masked_fill(mask == 0, -1e9)
+        if mask:
+            scores = scores.masked_fill(mask == 0, -1e9)
 
         weights = F.softmax(scores, dim=-1)
         weights = self.dropout(weights)
@@ -181,7 +185,10 @@ class MultiHeadedAttention(nn.Module):
             .view(context.shape[0], -1, self.heads * self.d_k)
         )
 
-        return self.output_linear(context)
+        hidden_states = self.dense(context)
+        hidden_states = self.out_dropout(hidden_states)
+        # hidden_states = self.layer_norm(hidden_states + context)
+        return hidden_states, context
 
 
 class FFN(nn.Module):
@@ -222,25 +229,24 @@ class BertEncoderLayer(torch.nn.Module):
 
     def __init__(self, config: BertConfig):
         super(BertEncoderLayer, self).__init__()
-        self.layernorm = torch.nn.LayerNorm(config.d_model)
+        self.layernorm = torch.nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
         self.self_multihead = MultiHeadedAttention(config)
         self.feed_forward = FFN(config)
         self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, embeddings: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, embeddings: torch.Tensor, mask: torch.Tensor = None
+    ) -> torch.Tensor:
         """Forward pass for a single encoder layer.
 
         Args:
             embeddings (torch.Tensor): Input embeddings.
-            mask (torch.Tensor): Mask tensor for attention.
+            mask (torch.Tensor): Mask tensor for attention. Defaults to None.
 
         Returns:
             torch.Tensor: Output embeddings after applying multi-head attention and feed-forward network.
         """
-        interacted = self.dropout(
-            self.self_multihead(embeddings, embeddings, embeddings, mask)
-        )
-        interacted = self.layernorm(interacted + embeddings)
+        interacted = self.self_multihead(embeddings, embeddings, embeddings, mask)
         feed_forward_out = self.dropout(self.feed_forward(interacted))
         return self.layernorm(feed_forward_out + interacted)
 
@@ -254,10 +260,7 @@ class Bert(nn.Module):
 
     def __init__(self, config: BertConfig):
         super().__init__()
-        self.d_model = config.d_model
         self.n_layers = config.n_layers
-        self.heads = config.heads
-        self.feed_forward_hidden = config.d_model * 4
         self.embeddings = BertEmbedding(config)
         self.encoder_blocks = torch.nn.ModuleList(
             [BertEncoderLayer(config) for _ in range(config.n_layers)]
@@ -277,7 +280,7 @@ class Bert(nn.Module):
         embeddings = self.embeddings(input_ids, token_type_ids)
 
         for encoder in self.encoder_blocks:
-            embeddings = encoder.forward(embeddings, mask)
+            embeddings = encoder(embeddings, mask)
         return embeddings
 
 
@@ -345,22 +348,38 @@ class BertLM(L.LightningModule):
     def __init__(self, config: BertConfig):
         super().__init__()
         self.config = config
-        self.bert = Bert(config)
+        self.encoder = Bert(config)
         self.next_sentence = NextSentencePrediction(config.d_model)
         self.mask_lm = MaskedLanguageModel(config.d_model, config.vocab_size)
 
-    def training_step(self, batch, segment_label):
+    def forward(
+        self, input_ids: torch.Tensor, token_type_ids: torch.Tensor
+    ) -> torch.Tensor:
+        """Forward pass for the entire BERT model.
+
+        Args:
+            input_ids (torch.Tensor): Input token indices.
+            token_type_ids (torch.Tensor): Segment labels (e.g., sentence A/B).
+
+        Returns:
+            torch.Tensor: Output embeddings after passing through all encoder layers.
+        """
+        return self.encoder(input_ids, token_type_ids)
+
+    def training_step(
+        self, input_ids: torch.Tensor, token_type_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Training step to compute the loss for both NSP and Masked LM tasks.
 
         Args:
-            batch (torch.Tensor): Input token indices.
-            segment_label (torch.Tensor): Segment indices.
+            input_ids (torch.Tensor): Input token indices.
+            token_type_ids (torch.Tensor): Segment indices.
 
         Returns:
             tuple: Tuple of Next Sentence Prediction and Masked LM outputs.
         """
-        batch = self.bert(batch, segment_label)
-        return self.next_sentence(batch), self.mask_lm(batch)
+        embeddings = self(input_ids, token_type_ids)
+        return self.next_sentence(embeddings), self.mask_lm(embeddings)
 
     def configure_optimizers(self):
         """Configure optimizers and learning rate scheduler for training.
@@ -392,24 +411,24 @@ class BertLM(L.LightningModule):
             pretrained = BertModel.from_pretrained(model_name)
 
             # Map embeddings
-            self.bert.embeddings.token.weight.data = (
+            self.encoder.embeddings.token.weight.data = (
                 pretrained.embeddings.word_embeddings.weight.data
             )
-            self.bert.embeddings.position.weight.data = (
+            self.encoder.embeddings.position.weight.data = (
                 pretrained.embeddings.position_embeddings.weight.data
             )
-            self.bert.embeddings.segment.weight.data = (
+            self.encoder.embeddings.segment.weight.data = (
                 pretrained.embeddings.token_type_embeddings.weight.data
             )
-            self.bert.embeddings.layer_norm.weight.data = (
+            self.encoder.embeddings.layer_norm.weight.data = (
                 pretrained.embeddings.LayerNorm.weight.data
             )
-            self.bert.embeddings.layer_norm.bias.data = (
-                    pretrained.embeddings.LayerNorm.bias.data
-                )
+            self.encoder.embeddings.layer_norm.bias.data = (
+                pretrained.embeddings.LayerNorm.bias.data
+            )
             # Map encoder layers
             for custom_layer, pretrained_layer in zip(
-                self.bert.encoder_blocks, pretrained.encoder.layer
+                self.encoder.encoder_blocks, pretrained.encoder.layer
             ):
                 # Self attention weights
                 custom_layer.self_multihead.query.weight.data = (
@@ -430,11 +449,17 @@ class BertLM(L.LightningModule):
                 custom_layer.self_multihead.value.bias.data = (
                     pretrained_layer.attention.self.value.bias.data
                 )
-                custom_layer.self_multihead.output_linear.weight.data = (
+                custom_layer.self_multihead.dense.weight.data = (
                     pretrained_layer.attention.output.dense.weight.data
                 )
-                custom_layer.self_multihead.output_linear.bias.data = (
+                custom_layer.self_multihead.dense.bias.data = (
                     pretrained_layer.attention.output.dense.bias.data
+                )
+                custom_layer.self_multihead.layer_norm.weight.data = (
+                    pretrained_layer.attention.output.LayerNorm.weight.data
+                )
+                custom_layer.self_multihead.layer_norm.bias.data = (
+                    pretrained_layer.attention.output.LayerNorm.bias.data
                 )
 
                 # Layer norm weights
